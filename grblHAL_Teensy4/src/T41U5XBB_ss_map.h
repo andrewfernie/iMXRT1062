@@ -7,7 +7,7 @@
 
   Board by Phil Barrett: https://github.com/phil-barrett/grblHAL-teensy-4.x
 
-  Copyright (c) 2020-2021 Terje Io
+  Copyright (c) 2020-2022 Terje Io
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -67,6 +67,10 @@
 #define M4_ENABLE_PIN       (37u)
 #endif
 
+#if MPG_MODE == 1 && !defined(M4_LIMIT_PIN)
+#define MPG_MODE_PIN        (28u)
+#endif
+
 // Define spindle enable and spindle direction output pins.
 #define SPINDLE_ENABLE_PIN      (12u)
 #define SPINDLE_DIRECTION_PIN   (11u)
@@ -80,7 +84,9 @@
 #define RESET_PIN           (35u)
 #define FEED_HOLD_PIN       (16u)
 #define CYCLE_START_PIN     (17u)
+#if SAFETY_DOOR_ENABLE
 #define SAFETY_DOOR_PIN     (29u)
+#endif
 
 // Define probe switch input pin.
 #define PROBE_PIN           (15u)

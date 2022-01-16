@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2020-2021 Terje Io
+  Copyright (c) 2020-2022 Terje Io
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,6 +19,9 @@
   along with Grbl.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+// shut up compiler warning...
+#pragma GCC diagnostic ignored "-Wunused-function"
+
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +30,7 @@
 #include "driver.h"
 #include "grbl/protocol.h"
 #include "grbl/limits.h"
+#include "grbl/state_machine.h"
 
 #ifdef I2C_PORT
 #include "i2c.h"
@@ -42,7 +46,12 @@
 #include "ioports.h"
 #endif
 
+#if KEYPAD_ENABLE == 2
+#include "keypad/keypad.h"
+#endif
+
 #if SDCARD_ENABLE
+#include "uSDFS.h"
 #include "sdcard/sdcard.h"
 #endif
 
@@ -53,12 +62,6 @@ static void ppi_timeout_isr (void);
 
 #if ETHERNET_ENABLE
   #include "enet.h"
-  #if TELNET_ENABLE
-    #include "networking/TCPStream.h"
-  #endif
-  #if WEBSOCKET_ENABLE
-    #include "networking/WsStream.h"
-  #endif
 #endif
 
 #if USB_SERIAL_CDC == 1
@@ -161,8 +164,9 @@ static gpio_t enableZ;
 #if I2C_STROBE_ENABLE
 static gpio_t KeypadStrobe;
 #endif
-#if MPG_MODE_ENABLE
+#if MPG_MODE == 1
 static gpio_t ModeSelect;
+static input_signal_t *mpg_pin = NULL;
 #endif
 #if QEI_ENABLE
 static bool qei_enable = false;
@@ -241,6 +245,18 @@ static gpio_t QEI_A, QEI_B;
 #ifdef AUXINPUT3_PIN
   static gpio_t AuxIn3;
 #endif
+#ifdef AUXINPUT4_PIN
+  static gpio_t AuxIn4;
+#endif
+#ifdef AUXINPUT5_PIN
+  static gpio_t AuxIn5;
+#endif
+#ifdef AUXINPUT6_PIN
+  static gpio_t AuxIn6;
+#endif
+#ifdef AUXINPUT7_PIN
+  static gpio_t AuxIn7;
+#endif
 
 #ifdef AUXOUTPUT0_PIN
   static gpio_t AuxOut0;
@@ -250,6 +266,21 @@ static gpio_t QEI_A, QEI_B;
 #endif
 #ifdef AUXOUTPUT2_PIN
   static gpio_t AuxOut2;
+#endif
+#ifdef AUXOUTPUT3_PIN
+  static gpio_t AuxOut3;
+#endif
+#ifdef AUXOUTPUT4_PIN
+  static gpio_t AuxOut4;
+#endif
+#ifdef AUXOUTPUT5_PIN
+  static gpio_t AuxOut5;
+#endif
+#ifdef AUXOUTPUT6_PIN
+  static gpio_t AuxOut6;
+#endif
+#ifdef AUXOUTPUT7_PIN
+  static gpio_t AuxOut7;
 #endif
 
 static periph_signal_t *periph_pins = NULL;
@@ -267,6 +298,9 @@ input_signal_t inputpin[] = {
 #endif
 #if defined(LIMITS_OVERRIDE_PIN)
     { .id = Input_LimitsOverride, .port = &LimitsOverride, .pin = LIMITS_OVERRIDE_PIN, .group = PinGroup_Control },
+#endif
+#ifdef MPG_MODE_PIN
+    { .id = Input_MPGSelect,      .port = &ModeSelect,     .pin = MPG_MODE_PIN,        .group = PinGroup_MPG },
 #endif
     { .id = Input_Probe,          .port = &Probe,          .pin = PROBE_PIN,           .group = PinGroup_Probe },
 // Limit input pins must be consecutive
@@ -301,8 +335,8 @@ input_signal_t inputpin[] = {
   , { .id = Input_LimitC,         .port = &LimitC,         .pin = C_LIMIT_PIN,         .group = PinGroup_Limit }
 #endif
 // End limit pin definitions
-#if MPG_MODE_ENABLE
-  ,  { .id = Input_ModeSelect,    .port = &ModeSelect,     .pin = MODE_PIN,            .group = PinGroup_MPG }
+#if MPG_MODE_PIN
+  , { .id = Input_ModeSelect,     .port = &ModeSelect,     .pin = MPG_MODE_PIN,        .group = PinGroup_MPG }
 #endif
 #if I2C_STROBE_ENABLE && defined(I2C_STROBE_PIN)
   , { .id = Input_KeypadStrobe,   .port = &KeypadStrobe,   .pin = I2C_STROBE_PIN,      .group = PinGroup_Keypad }
@@ -332,6 +366,18 @@ input_signal_t inputpin[] = {
 #endif
 #ifdef AUXINPUT3_PIN
   , { .id = Input_Aux3,           .port = &AuxIn3,         .pin = AUXINPUT3_PIN,       .group = PinGroup_AuxInput }
+#endif
+#ifdef AUXINPUT4_PIN
+  , { .id = Input_Aux4,           .port = &AuxIn4,         .pin = AUXINPUT4_PIN,       .group = PinGroup_AuxInput }
+#endif
+#ifdef AUXINPUT5_PIN
+  , { .id = Input_Aux5,           .port = &AuxIn5,         .pin = AUXINPUT5_PIN,       .group = PinGroup_AuxInput }
+#endif
+#ifdef AUXINPUT6_PIN
+  , { .id = Input_Aux6,           .port = &AuxIn6,         .pin = AUXINPUT6_PIN,       .group = PinGroup_AuxInput }
+#endif
+#ifdef AUXINPUT7_PIN
+  , { .id = Input_Aux7,           .port = &AuxIn7,         .pin = AUXINPUT7_PIN,       .group = PinGroup_AuxInput }
 #endif
 };
 
@@ -427,13 +473,28 @@ static output_signal_t outputpin[] = {
     { .id = Output_Aux1,            .port = &AuxOut1,       .pin = AUXOUTPUT1_PIN,          .group = PinGroup_AuxOutput },
 #endif
 #ifdef AUXOUTPUT2_PIN
-    { .id = Output_Aux2,            .port = &AuxOut2,       .pin = AUXOUTPUT2_PIN,          .group = PinGroup_AuxOutput }
+    { .id = Output_Aux2,            .port = &AuxOut2,       .pin = AUXOUTPUT2_PIN,          .group = PinGroup_AuxOutput },
+#endif
+#ifdef AUXOUTPUT3_PIN
+    { .id = Output_Aux3,            .port = &AuxOut3,       .pin = AUXOUTPUT3_PIN,          .group = PinGroup_AuxOutput },
+#endif
+#ifdef AUXOUTPUT4_PIN
+    { .id = Output_Aux4,            .port = &AuxOut4,       .pin = AUXOUTPUT4_PIN,          .group = PinGroup_AuxOutput },
+#endif
+#ifdef AUXOUTPUT5_PIN
+    { .id = Output_Aux5,            .port = &AuxOut5,       .pin = AUXOUTPUT5_PIN,          .group = PinGroup_AuxOutput },
+#endif
+#ifdef AUXOUTPUT6_PIN
+    { .id = Output_Aux6,            .port = &AuxOut6,       .pin = AUXOUTPUT6_PIN,          .group = PinGroup_AuxOutput },
+#endif
+#ifdef AUXOUTPUT7_PIN
+    { .id = Output_Aux7,            .port = &AuxOut7,       .pin = AUXOUTPUT7_PIN,          .group = PinGroup_AuxOutput }
 #endif
 };
 
 static pin_group_pins_t limit_inputs = {0};
 
-#if USB_SERIAL_CDC || QEI_ENABLE
+#if QEI_ENABLE
 #define ADD_MSEVENT 1
 static volatile bool ms_event = false;
 #else
@@ -475,27 +536,6 @@ static void spindle_pulse_isr (void);
 
 #endif
 
-static const io_stream_t *serial_stream;
-
-#if ETHERNET_ENABLE
-static network_services_t services = {0};
-static stream_write_ptr write_serial;
-
-static void enetStreamWriteS (const char *data)
-{
-#if TELNET_ENABLE
-    if(services.telnet)
-        TCPStreamWriteS(data);
-#endif
-#if WEBSOCKET_ENABLE
-    if(services.websocket)
-        WsStreamWriteS(data);
-#endif
-    if(write_serial)
-        write_serial(data);
-}
-#endif // ETHERNET_ENABLE
-
 #if I2C_STROBE_ENABLE
 
 static driver_irq_handler_t i2c_strobe = { .type = IRQ_I2C_Strobe };
@@ -533,8 +573,10 @@ static void driver_delay_ms (uint32_t ms, delay_callback_ptr callback)
 {
     if(ms) {
         grbl_delay.ms = ms;
-        if(!(grbl_delay.callback = callback))
-            while(grbl_delay.ms);
+        if(!(grbl_delay.callback = callback)) {
+            while(grbl_delay.ms)
+                grbl.on_execute_delay(state_get());
+        }
     } else {
         if(grbl_delay.ms) {
             grbl_delay.callback = NULL;
@@ -543,83 +585,6 @@ static void driver_delay_ms (uint32_t ms, delay_callback_ptr callback)
         if(callback)
             callback();
     }
-}
-
-static bool selectStream (const io_stream_t *stream)
-{
-    static bool serial_connected = false;
-    static stream_type_t active_stream = StreamType_Serial;
-    static const io_stream_t *last_serial_stream;
-
-    if(hal.stream.type == StreamType_Serial || hal.stream.type == StreamType_Bluetooth)
-        serial_connected = hal.stream.state.connected;
-
-    if(!stream)
-        stream = active_stream == StreamType_Bluetooth ? serial_stream : last_serial_stream;
-
-    bool webui_connected = hal.stream.state.webui_connected;
-
-    if( hal.stream.write  && hal.stream.type == StreamType_Serial)
-        hal.stream.write(webui_connected ? "Con" : "Nocon");
-
-    memcpy(&hal.stream, stream, sizeof(io_stream_t));
-
-#if ETHERNET_ENABLE
-    if(!hal.stream.write_all)
-        hal.stream.write_all = serial_connected ? enetStreamWriteS : hal.stream.write;
-#else
-    if(!hal.stream.write_all)
-        hal.stream.write_all = hal.stream.write;
-#endif
-
-    switch(stream->type) {
-
-#if TELNET_ENABLE
-        case StreamType_Telnet:
-            services.telnet = On;
-            hal.stream.write_all("[MSG:TELNET STREAM ACTIVE]" ASCII_EOL);
-            break;
-#endif
-#if WEBSOCKET_ENABLE
-        case StreamType_WebSocket:
-            services.websocket = On;
-            hal.stream.state.webui_connected = webui_connected;
-            hal.stream.write_all("[MSG:WEBSOCKET STREAM ACTIVE]" ASCII_EOL);
-            break;
-#endif
-        case StreamType_Serial:
-#if ETHERNET_ENABLE
-            services.mask = 0;
-            write_serial = serial_connected ? hal.stream.write : NULL;
-#endif
-            hal.stream.state.connected = serial_connected;
-            last_serial_stream = stream;
-            if(active_stream != StreamType_Serial && hal.stream.state.connected)
-                hal.stream.write_all("[MSG:SERIAL STREAM ACTIVE]" ASCII_EOL);
-            break;
-
-        case StreamType_Bluetooth:
-#if ETHERNET_ENABLE
-            services.mask = 0;
-            write_serial = hal.stream.write;
-#endif
-            last_serial_stream = stream;
-            break;
-        default:
-            break;
-    }
-
-    hal.stream.set_enqueue_rt_handler(protocol_enqueue_realtime_command);
-
-    if(hal.stream.disable_rx)
-        hal.stream.disable_rx(false);
-
-    if(grbl.on_stream_changed)
-        grbl.on_stream_changed(hal.stream.type);
-
-    active_stream = hal.stream.type;
-
-    return stream->type == hal.stream.type;
 }
 
 // Set stepper pulse output pins.
@@ -1314,6 +1279,8 @@ static void spindlePulseOn (uint_fast16_t pulse_length)
 
 #endif
 
+#endif // VFD_SPINDLE != 1
+
 #if SPINDLE_SYNC_ENABLE
 
 static spindle_data_t *spindleGetData (spindle_data_request_t request)
@@ -1398,11 +1365,10 @@ static void spindleDataReset (void)
     GPT2_CR |= GPT_CR_EN;
 }
 
-#endif
+#endif // SPINDLE_SYNC_ENABLE
 
 // end spindle code
 
-#endif
 
 // Start/stop coolant (and mist if enabled).
 // coolant_state_t is defined in grbl/coolant_control.h.
@@ -1427,17 +1393,6 @@ static coolant_state_t coolantGetState (void)
 
     return state;
 }
-
-#if ETHERNET_ENABLE
-static void reportIP (bool newopt)
-{
-    if(!newopt && (services.telnet || services.websocket)) {
-        hal.stream.write("[NETCON:");
-        hal.stream.write(services.telnet ? "Telnet" : "Websocket");
-        hal.stream.write("]" ASCII_EOL);
-    }
-}
-#endif
 
 // Helper functions for setting/clearing/inverting individual bits atomically (uninterruptable)
 static void bitsSetAtomic (volatile uint_fast16_t *ptr, uint_fast16_t bits)
@@ -1477,6 +1432,25 @@ static void disable_irq (void)
     __disable_irq();
 }
 
+#if MPG_MODE == 1
+
+static void mpg_select (sys_state_t state)
+{
+    stream_mpg_enable(DIGITAL_IN(mpg_pin->gpio) == 0);
+
+    pinEnableIRQ(mpg_pin, (mpg_pin->irq_mode = sys.mpg_mode ? IRQ_Mode_Rising : IRQ_Mode_Falling));
+}
+
+static void mpg_enable (sys_state_t state)
+{
+    if(sys.mpg_mode == DIGITAL_IN(mpg_pin->gpio))
+        stream_mpg_enable(true);
+
+    pinEnableIRQ(mpg_pin, (mpg_pin->irq_mode = sys.mpg_mode ? IRQ_Mode_Rising : IRQ_Mode_Falling));
+}
+
+#endif
+
 // Configures perhipherals when settings are initialized or changed
 static void settings_changed (settings_t *settings)
 {
@@ -1515,7 +1489,8 @@ static void settings_changed (settings_t *settings)
 
 #if SPINDLE_SYNC_ENABLE
 
-        if((hal.spindle.get_data = settings->spindle.ppr > 0 ? spindleGetData : NULL) && spindle_encoder.ppr != settings->spindle.ppr) {
+        if((hal.spindle.get_data = (hal.driver_cap.spindle_at_speed = settings->spindle.ppr > 0) ? spindleGetData : NULL) &&
+             (spindle_encoder.ppr != settings->spindle.ppr || pidf_config_changed(&spindle_tracker.pid, &settings->position.pid))) {
 
             hal.spindle.reset_data = spindleDataReset;
             hal.spindle.set_state((spindle_state_t){0}, 0.0f);
@@ -1662,9 +1637,9 @@ static void settings_changed (settings_t *settings)
                     signal->irq_mode = limit_fei.b ? IRQ_Mode_Falling : IRQ_Mode_Rising;
                     break;
 #endif
-#if MPG_MODE_ENABLE
-                case Input_ModeSelect:
-                    signal->irq_mode = IRQ_Mode_Change;
+#ifdef MPG_MODE_PIN
+                case Input_MPGSelect:
+                    pullup = true;
                     break;
 #endif
 #if I2C_STROBE_ENABLE
@@ -1917,6 +1892,26 @@ static void encoder_event (encoder_t *encoder, int32_t position)
 
 #endif
 
+#if SDCARD_ENABLE
+
+static char *sdcard_mount (FATFS **fs)
+{
+    static FATFS fatfs;
+    static const char *dev = "1:/";
+
+    if(f_mount(&fatfs, dev, 1) == FR_OK && f_chdrive(dev) == FR_OK)
+        *fs = &fatfs;
+
+    return (char *)dev;
+}
+
+static bool sdcard_unmount (FATFS **fs)
+{
+    return false; // for now
+}
+
+#endif
+
 // Initializes MCU peripherals for Grbl use
 static bool driver_setup (settings_t *settings)
 {
@@ -2067,6 +2062,15 @@ static bool driver_setup (settings_t *settings)
     GPT2_OCR1 = spindle_encoder.tics_per_irq;
     GPT2_IR = GPT_IR_OF1IE;
 
+    static const periph_pin_t spp = {
+        .function = Input_SpindlePulse,
+        .group = PinGroup_SpindlePulse,
+        .pin = SPINDLE_PULSE_PIN,
+        .mode = { .input = On, .peripheral = On }
+    };
+
+    hal.periph_port.register_pin(&spp);
+
     attachInterruptVector(IRQ_GPT2, spindle_pulse_isr);
     NVIC_SET_PRIORITY(IRQ_GPT2, 1);
     NVIC_ENABLE_IRQ(IRQ_GPT2);
@@ -2109,7 +2113,9 @@ static bool driver_setup (settings_t *settings)
 #endif
 
 #if SDCARD_ENABLE
-    sdcard_init();
+    sdcard_events_t *card = sdcard_init();
+    card->on_mount = sdcard_mount;
+    card->on_unmount = sdcard_unmount;
 #endif
 
 #if ETHERNET_ENABLE
@@ -2148,15 +2154,10 @@ bool nvsWrite (uint8_t *source)
 
 #endif
 
-#if ETHERNET_ENABLE || ADD_MSEVENT
+#if ADD_MSEVENT
 
 static void execute_realtime (uint_fast16_t state)
 {
-#if USB_SERIAL_CDC
-    if(usb_serial_input())
-        usb_execute_realtime();
-#endif
-#if ADD_MSEVENT
     if(ms_event) {
 
         ms_event = false;
@@ -2177,14 +2178,9 @@ static void execute_realtime (uint_fast16_t state)
         }
   #endif
     }
-#endif // ADD_MSEVENT
-
-#if ETHERNET_ENABLE
-    grbl_enet_poll();
-#endif
 }
 
-#endif
+#endif // ADD_MSEVENT
 
 #ifdef DEBUGOUT
 
@@ -2207,15 +2203,30 @@ bool driver_init (void)
 {
     static char options[30];
 
+    uint32_t i;
+
     // Chain our systick isr to the Arduino handler
 
-    if(systick_isr_org == NULL) 
+    if(systick_isr_org == NULL)
         systick_isr_org = _VectorsRam[15];
     _VectorsRam[15] = systick_isr;
 
     // Enable lazy stacking of FPU registers here if a FPU is available.
 
  //   FPU->FPCCR = (FPU->FPCCR & ~FPU_FPCCR_LSPEN_Msk) | FPU_FPCCR_ASPEN_Msk;  // enable lazy stacking
+
+#ifdef MPG_MODE_PIN
+	// Pull down MPG mode pin until startup is completed.
+    i = 0;
+    while(mpg_pin == NULL) {
+        if(inputpin[i].id == Input_ModeSelect) {
+            mpg_pin = &inputpin[i];
+            pinModeOutput(mpg_pin->port, mpg_pin->pin);
+            DIGITAL_OUT(ModeSelect, 0);
+        }
+        i++;
+    }
+#endif
 
     options[0] = '\0';
 
@@ -2230,7 +2241,7 @@ bool driver_init (void)
         options[strlen(options) - 1] = '\0';
 
     hal.info = "iMXRT1062";
-    hal.driver_version = "211203";
+    hal.driver_version = "220111";
 #ifdef BOARD_NAME
     hal.board = BOARD_NAME;
 #endif
@@ -2278,13 +2289,8 @@ bool driver_init (void)
 #endif
 #if SPINDLE_SYNC_ENABLE
     hal.driver_cap.spindle_sync = On;
-    hal.driver_cap.spindle_at_speed = On;
 #endif
     hal.control.get_state = systemGetState;
-
-#if ETHERNET_ENABLE
-    grbl.on_report_options = reportIP;
-#endif
 
     hal.reboot = reboot;
     hal.irq_enable = enable_irq;
@@ -2301,13 +2307,11 @@ bool driver_init (void)
     hal.periph_port.set_pin_description = setPeriphPinDescription;
 
 #if USB_SERIAL_CDC
-    serial_stream = usb_serialInit();
+//    stream_connect(serialInit(115200));
+    stream_connect(usb_serialInit());
 #else
-    serial_stream = serialInit(115200);
+    stream_connect(serialInit(BAUD_RATE));
 #endif
-
-    hal.stream_select = selectStream;
-    hal.stream_select(serial_stream);
 
 #ifdef I2C_PORT
     i2c_init();
@@ -2322,7 +2326,7 @@ bool driver_init (void)
     hal.nvs.memcpy_to_flash = nvsWrite;
 #endif
 
-#if ETHERNET_ENABLE || ADD_MSEVENT
+#if ADD_MSEVENT
     grbl.on_execute_realtime = execute_realtime;
 #endif
 
@@ -2366,43 +2370,49 @@ bool driver_init (void)
     hal.driver_cap.limits_pull_up = On;
     hal.driver_cap.probe_pull_up = On;
 
-    uint32_t i;
-    input_signal_t *signal;
+    input_signal_t *input;
     static pin_group_pins_t aux_inputs = {0}, aux_outputs = {0};
 
     for(i = 0 ; i < sizeof(inputpin) / sizeof(input_signal_t); i++) {
-        signal = &inputpin[i];
-#ifdef HAS_IOPORTS
-        if(signal->group == PinGroup_AuxInput) {
+        input = &inputpin[i];
+        if(input->group == PinGroup_AuxInput) {
             if(aux_inputs.pins.inputs == NULL)
-                aux_inputs.pins.inputs = signal;
-            aux_inputs.n_pins++;
-            signal->cap.pull_mode = PullMode_UpDown;
-            signal->cap.irq_mode = IRQ_Mode_All;
+                aux_inputs.pins.inputs = input;
+            input->id = (pin_function_t)(Input_Aux0 + aux_inputs.n_pins++);
+            input->cap.pull_mode = PullMode_UpDown;
+            input->cap.irq_mode = IRQ_Mode_All;
         }
-#endif
-        if(signal->group == PinGroup_Limit) {
+        if(input->group == PinGroup_Limit) {
             if(limit_inputs.pins.inputs == NULL)
-                limit_inputs.pins.inputs = signal;
+                limit_inputs.pins.inputs = input;
             limit_inputs.n_pins++;
         }
     }
 
-#ifdef HAS_IOPORTS
     output_signal_t *output;
     for(i = 0 ; i < sizeof(outputpin) / sizeof(output_signal_t); i++) {
         output = &outputpin[i];
         if(output->group == PinGroup_AuxOutput) {
             if(aux_outputs.pins.outputs == NULL)
                 aux_outputs.pins.outputs = output;
-            aux_outputs.n_pins++;
+            output->id = (pin_function_t)(Output_Aux0 + aux_outputs.n_pins++);
         }
     }
 
+#ifdef HAS_IOPORTS
     ioports_init(&aux_inputs, &aux_outputs);
 #endif
 
     serialRegisterStreams();
+
+#if MPG_MODE == 1
+    if((hal.driver_cap.mpg_mode = stream_mpg_register(serialInit(115200), false, NULL)))
+        protocol_enqueue_rt_command(mpg_enable);
+#elif MPG_MODE == 2
+    hal.driver_cap.mpg_mode = stream_mpg_register(serialInit(115200), false, keypad_enqueue_keycode);
+#elif KEYPAD_ENABLE == 2
+    stream_open_instance(0, 115200, keypad_enqueue_keycode);
+#endif
 
 #if ETHERNET_ENABLE
     grbl_enet_init();
@@ -2638,6 +2648,13 @@ static void gpio_isr (void)
                         ioports_event(&inputpin[i]);
                         break;
 #endif
+
+#if MPG_MODE == 1
+                    case PinGroup_MPG:
+                        pinEnableIRQ(&inputpin[i], IRQ_Mode_None);
+                        protocol_enqueue_rt_command(mpg_select);
+                        break;
+#endif
                     default:
                         grp |= inputpin[i].group;
                         break;
@@ -2670,18 +2687,6 @@ static void gpio_isr (void)
         }
     }
 
-#endif
-
-#if MPG_MODE_ENABLE
-
-    static bool mpg_mutex = false;
-
-    if((grp & PinGroup_MPG) && !mpg_mutex) {
-        mpg_mutex = true;
-        modeChange();
-        // hal.delay_ms(50, modeChange);
-        mpg_mutex = false;
-    }
 #endif
 }
 

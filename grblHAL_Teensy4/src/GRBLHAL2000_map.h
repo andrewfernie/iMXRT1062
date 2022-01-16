@@ -23,7 +23,10 @@
 #define BOARD_NAME "GRBLHAL2000 - PRINTNC"
 #define HAS_BOARD_INIT
 #define HAS_IOPORTS
+
+#if MODBUS_ENABLE < 1
 #define UART_PORT 8
+#endif
 
 #ifdef NETWORK_HOSTNAME
     #undef NETWORK_HOSTNAME
@@ -87,9 +90,9 @@
 #if MOTOR_FAULT_ENABLE
 #define MOTOR_FAULT_PIN     (29u)
 #endif
-
+#if SAFETY_DOOR_ENABLE
 #define SAFETY_DOOR_PIN     (29u)
-
+#endif
 
 // Define probe switch input pin.
 #define PROBE_PIN           (15u)

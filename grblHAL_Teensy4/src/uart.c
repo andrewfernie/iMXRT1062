@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Some parts of this code is Copyright (c) 2020-2021 Terje Io
+  Some parts of this code is Copyright (c) 2020-2022 Terje Io
 
   Some parts are derived from HardwareSerial.cpp in the Teensyduino Core Library
 
@@ -204,7 +204,6 @@ void serialRegisterStreams (void)
     stream_register_streams(&streams);
 }
 
-
 //
 // serialGetC - returns -1 if no data available
 //
@@ -334,9 +333,9 @@ static bool serialSetBaudRate (uint32_t baud_rate)
 static bool serialDisable (bool disable)
 {
     if(disable)
-        NVIC_DISABLE_IRQ(UART.irq);
+        UART.port->CTRL &= ~LPUART_CTRL_RIE;
     else
-        NVIC_ENABLE_IRQ(UART.irq);
+        UART.port->CTRL |= LPUART_CTRL_RIE;
 
     return true;
 }
@@ -360,12 +359,11 @@ const io_stream_t *serialInit (uint32_t baud_rate)
 {
     PROGMEM static const io_stream_t stream = {
         .type = StreamType_Serial,
-        .state.connected = true,
+        .state.connected = On,
         .read = serialGetC,
         .write = serialWriteS,
         .write_n = serialWrite,
         .write_char = serialPutC,
-        .write_all = serialWriteS,
         .enqueue_rt_command = serialEnqueueRtCommand,
         .get_rx_buffer_free = serialRxFree,
         .get_rx_buffer_count = serialRxCount,
@@ -456,14 +454,16 @@ const io_stream_t *serialInit (uint32_t baud_rate)
         .function = Output_TX,
         .group = PinGroup_UART,
         .pin = TX_PIN,
-        .mode = { .mask = PINMODE_OUTPUT }
+        .mode = { .mask = PINMODE_OUTPUT },
+        .description = "UART1"
     };
 
     static const periph_pin_t rx = {
         .function = Input_RX,
         .group = PinGroup_UART,
         .pin = RX_PIN,
-        .mode = { .mask = PINMODE_NONE }
+        .mode = { .mask = PINMODE_NONE },
+        .description = "UART1"
     };
 
     hal.periph_port.register_pin(&rx);
